@@ -1,6 +1,6 @@
 #  Points of Interest Bug
 
-In Xcode 15.0 (15A240d), I have noticed that Points of Interest intervals do not always show up. E.g., I profiled the attached app and every click of a button should log four intervals, but sometimes only three show up:
+In Xcode 15.0.1 – 15A507 (and, also in previous version, 15.0 – 15A240d), I have noticed that Points of Interest intervals do not always show up. E.g., I profiled the attached app and every click of a button should log four intervals, but sometimes only three show up:
 
 ![Instruments](Instruments.png)
 
