@@ -6,64 +6,83 @@
 //
 
 import SwiftUI
-import os.log
+import os.signpost
 
-let poi = OSLog(subsystem: "Test", category: .pointsOfInterest)
+let poi = OSSignposter(subsystem: "test", category: .pointsOfInterest)
 
 struct ContentView: View {
-    @State var run = 0
     @State var status = "Not started…"
     @State var buttonsDisabled = false
+    let iterations = 200
+    @State var experiment = Experiment()
+    
+    func sample(_ name: StaticString) async throws {
+        let id = poi.makeSignpostID()
+        let state = poi.beginInterval(name, id: id)
+        try await Task.sleep(for: .seconds(1))
+        poi.endInterval(name, state)
+    }
     
     var body: some View {
         VStack {
             Text("Instruments’ “Points of Interest” experiment")
             Text(status)
-            Button("Test Async-Await 100 Times") {
+            
+            Button("Unsafe – \(iterations) Times") {
                 Task {
+                    poi.emitEvent("Async-Await")
+                    
                     status = "Starting"
                     buttonsDisabled = true
-                    for _ in 0 ..< 100 {
-                        try await experimentAsyncAwait()
-                        status = "Finished \(run) … still running"
-                        try await Task.sleep(for: .milliseconds(500))
+                    
+                    for iteration in 0 ..< iterations {
+                        try await experiment.fourConcurrentTasksUnsafe(for: iteration)
+                        status = "Finished \(iteration) … still running"
+                        try await Task.sleep(for: .seconds(0.25))
                     }
+                    
                     status = "All done"
                     buttonsDisabled = false
                 }
             }
             .disabled(buttonsDisabled)
-            
-            Button("Test GCD 100 Times") {
-                status = "Starting"
-                buttonsDisabled = true
-                experimentRepeatGCD(times: 100) { index in
-                    Task { @MainActor in
-                        status = "Finished \(run) … still running"
+
+            Button("Safe – \(iterations) Times") {
+                Task {
+                    poi.emitEvent("Async-Await")
+                    
+                    status = "Starting"
+                    buttonsDisabled = true
+                    
+                    for iteration in 0 ..< iterations {
+                        try await experiment.fourConcurrentTasksSafe(for: iteration)
+                        status = "Finished \(iteration) … still running"
+                        try await Task.sleep(for: .seconds(0.25))
                     }
-                } completion: {
-                    Task { @MainActor in
-                        status = "All done"
-                        buttonsDisabled = false
-                    }
+                    
+                    status = "All done"
+                    buttonsDisabled = false
                 }
             }
             .disabled(buttonsDisabled)
         }
         .padding()
     }
+}
 
-    func experimentAsyncAwait() async throws {
-        run += 1
-
-        try await withThrowingTaskGroup(of: Void.self) { group in
+final class Experiment: Sendable {
+    nonisolated init() { }
+        
+    func fourConcurrentTasksUnsafe(for run: Int) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in // [lock] group in
             for index in 0..<4 {
                 group.addTask {
-                    let id = OSSignpostID(log: poi)
-                    os_signpost(.begin, log: poi, name: #function, signpostID: id, "%d: %d", run, index)
-                    defer { os_signpost(.end, log: poi, name: #function, signpostID: id) }
+                    let id = poi.makeSignpostID()
+                    let state = poi.beginInterval(#function, id: id, "\(run): \(index)")
+
+                    try await Task.sleep(for: .seconds(0.25))
                     
-                    try await Task.sleep(for: .seconds(1))
+                    poi.endInterval(#function, state)
                 }
             }
             
@@ -71,47 +90,35 @@ struct ContentView: View {
         }
     }
 
-    func experimentRepeatGCD(
-        times: Int,
-        index: Int = 0,
-        update: @escaping (Int) -> Void,
-        completion: @escaping () -> Void
-    ) {
-        if index >= times { return }
-        
-        experimentGCD {
-            update(index)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                experimentRepeatGCD(times: times, index: index + 1, update: update, completion: completion)
+    func fourConcurrentTasksSafe(for run: Int) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            let lock = NSLock()
+
+            for index in 0..<4 {
+                group.addTask {
+                    let state = lock.withLock {
+                        let id = poi.makeSignpostID()
+                        return poi.beginInterval(#function, id: id, "\(run): \(index)")
+                    }
+
+                    try await Task.sleep(for: .seconds(0.25))
+                    
+                    lock.withLock {
+                        poi.endInterval(#function, state)
+                    }
+                }
             }
+            
+            try await group.waitForAll()
         }
-    }
-    
-    func experimentGCD(completion: @escaping () -> Void) {
-        run += 1
-
-        let queue = DispatchQueue.global()
-        let group = DispatchGroup()
-
-        for index in 0..<4 {
-            queue.async(group: group) {
-                let id = OSSignpostID(log: poi)
-                os_signpost(.begin, log: poi, name: #function, signpostID: id, "%d: %d", run, index)
-                defer { os_signpost(.end, log: poi, name: #function, signpostID: id) }
-                
-                spin(for: 1)
-            }
-        }
-        
-        group.notify(queue: .main, execute: completion)
-    }
-
-    func spin(for interval: TimeInterval) {
-        let start = CACurrentMediaTime()
-        while CACurrentMediaTime() - start < interval { }
     }
 }
 
 #Preview {
     ContentView()
+}
+
+@globalActor
+public actor SignpostActor {
+    public static let shared = SignpostActor()
 }
